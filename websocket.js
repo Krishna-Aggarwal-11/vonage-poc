@@ -51,4 +51,5 @@ export function setupAudioConnectorWebSocket(server) {
 
 function handleIncomingAudioChunk(pcmChunk, metadata) {
   // Pass chunk to your STT transcription stream (see Step 4)
+  console.log(data , metadata)
 }

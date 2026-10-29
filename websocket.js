@@ -1,6 +1,7 @@
 import { WebSocketServer } from 'ws';
 import { finishVadStream, handleIncomingAudioChunk } from './vad.js';
 import { finishAudioRecording, handleIncomingAudioChunk as recordFullAudioChunk } from './audio-recorder.js';
+import { uploadAudioFile } from './cloudinary-storage.js';
 
 export function setupAudioConnectorWebSocket(server) {
   const wss = new WebSocketServer({ noServer: true });
@@ -51,14 +52,29 @@ export function setupAudioConnectorWebSocket(server) {
     ws.on('close', (code, reason) => {
       console.log(`[AudioConnector] Disconnected: ${code} - ${reason.toString()}`);
       writeQueue.then(async () => {
-        const fullPath = await finishAudioRecording(recordingId);
-        const segmentPaths = await finishVadStream(recordingId);
-        return { fullPath, segmentPaths };
-      }).then(({ fullPath, segmentPaths }) => {
-        if (fullPath) console.log('[AudioConnector] Full recording finalized:', fullPath);
-        if (segmentPaths.length) console.log('[AudioConnector] Final VAD segments:', segmentPaths);
+        const [fullResult, vadResult] = await Promise.allSettled([
+          finishAudioRecording(recordingId),
+          finishVadStream(recordingId)
+        ]);
+
+        if (fullResult.status === 'fulfilled' && fullResult.value) {
+          try {
+            const uploaded = await uploadAudioFile(fullResult.value);
+            console.log('[AudioConnector] Full recording uploaded:', uploaded.url);
+          } catch (err) {
+            console.error('[AudioConnector] Failed to upload full recording:', err);
+          }
+        } else if (fullResult.status === 'rejected') {
+          console.error('[AudioConnector] Failed to finalize full recording:', fullResult.reason);
+        }
+
+        if (vadResult.status === 'fulfilled' && vadResult.value.length) {
+          console.log('[AudioConnector] Final VAD segments uploaded:', vadResult.value);
+        } else if (vadResult.status === 'rejected') {
+          console.error('[AudioConnector] Failed to finalize VAD segments:', vadResult.reason);
+        }
       }).catch((err) => {
-        console.error('[AudioConnector] Failed to finalize VAD stream:', err);
+        console.error('[AudioConnector] Failed to finalize recordings:', err);
       });
     });
 

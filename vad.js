@@ -1,5 +1,6 @@
 import { createVad } from '@fluidinference/fluidvad';
 import { writePcmWaveFile } from './audio-recorder.js';
+import { uploadAudioFile } from './cloudinary-storage.js';
 
 const SAMPLE_RATE = 16_000;
 const PADDING_SECONDS = 0.15;
@@ -91,11 +92,12 @@ async function saveSegment(state, startSample, endSample) {
   state.segmentNumber += 1;
   const fileId = `${state.safeId}-segment-${String(state.segmentNumber).padStart(3, '0')}`;
   const path = await writePcmWaveFile(audio, fileId);
+  const uploaded = await uploadAudioFile(path);
   // Retain 150 ms before the next utterance for its configured speech padding.
   pruneAudio(state, Math.max(state.bufferStartSample, endSample - SAMPLE_RATE * PADDING_SECONDS));
   state.speechStart = null;
-  console.log('[VAD] Saved segment:', path);
-  return path;
+  console.log('[VAD] Uploaded segment:', uploaded.url);
+  return uploaded.url;
 }
 
 function pruneAudio(state, beforeSample) {

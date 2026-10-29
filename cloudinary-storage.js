@@ -31,10 +31,23 @@ export async function uploadAudioFile(path) {
     overwrite: false
   });
 
-  // Cloudinary now holds the durable copy; remove the temporary Vercel file.
-  await unlink(path).catch(() => {});
   return {
     publicId: result.public_id,
     url: result.secure_url
   };
+}
+
+export async function uploadJsonFile(path) {
+  configureCloudinary();
+  const result = await cloudinary.uploader.upload(path, {
+    resource_type: 'raw',
+    folder: 'vonage-recordings/transcripts',
+    public_id: basename(path),
+    overwrite: true
+  });
+  return { publicId: result.public_id, url: result.secure_url };
+}
+
+export async function removeLocalFile(path) {
+  await unlink(path).catch(() => {});
 }

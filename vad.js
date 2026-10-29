@@ -1,6 +1,10 @@
 import { createVad } from '@fluidinference/fluidvad';
+import { writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { writePcmWaveFile } from './audio-recorder.js';
-import { uploadAudioFile } from './cloudinary-storage.js';
+import { removeLocalFile, uploadAudioFile, uploadJsonFile } from './cloudinary-storage.js';
+import { transcribeAudioFile } from './openai-transcription.js';
 
 const SAMPLE_RATE = 16_000;
 const PADDING_SECONDS = 0.15;
@@ -22,7 +26,9 @@ async function createStream(sessionId) {
     totalSamples: 0,
     bufferStartSample: 0,
     speechStart: null,
-    segmentNumber: 0
+    segmentNumber: 0,
+    transcriptEntries: [],
+    jobs: []
   };
 }
 
@@ -70,13 +76,23 @@ export async function finishVadStream(streamId) {
   const pending = streams.get(streamId);
   if (!pending) return [];
   const state = await pending;
-  const saved = [];
   if (state.speechStart !== null) {
-    const path = await saveSegment(state, state.speechStart, state.totalSamples);
-    if (path) saved.push(path);
+    await saveSegment(state, state.speechStart, state.totalSamples);
   }
-  streams.delete(streamId);
-  return saved;
+
+  // Transcriptions run concurrently while audio keeps arriving. On socket
+  // close, retain the job and finish only after every chunk settles.
+  await Promise.allSettled(state.jobs);
+  const jsonPath = join(tmpdir(), `${state.safeId}-${Date.now()}-transcript.json`);
+  await writeFile(jsonPath, JSON.stringify(state.transcriptEntries, null, 2));
+  try {
+    const uploaded = await uploadJsonFile(jsonPath);
+    await removeLocalFile(jsonPath);
+    console.log('[Transcript] JSON file completed:', uploaded.url);
+    return { transcriptUrl: uploaded.url, entries: state.transcriptEntries };
+  } finally {
+    streams.delete(streamId);
+  }
 }
 
 async function saveSegment(state, startSample, endSample) {
@@ -92,12 +108,42 @@ async function saveSegment(state, startSample, endSample) {
   state.segmentNumber += 1;
   const fileId = `${state.safeId}-segment-${String(state.segmentNumber).padStart(3, '0')}`;
   const path = await writePcmWaveFile(audio, fileId);
-  const uploaded = await uploadAudioFile(path);
+  const entry = {
+    startTime: Number((startSample / SAMPLE_RATE).toFixed(3)),
+    endTime: Number((endSample / SAMPLE_RATE).toFixed(3)),
+    transcript: ''
+  };
+  state.transcriptEntries.push(entry);
+
+  // Start OpenAI and Cloudinary requests together. Do not block VAD or the
+  // next incoming WebSocket chunk while either network request is running.
+  const job = (async () => {
+    const [transcription, upload] = await Promise.allSettled([
+      transcribeAudioFile(path),
+      uploadAudioFile(path)
+    ]);
+    if (transcription.status === 'fulfilled') {
+      entry.transcript = transcription.value;
+    } else {
+      entry.transcriptionError = transcription.reason?.message || String(transcription.reason);
+      console.error('[Transcript] Chunk transcription failed:', entry.transcriptionError);
+    }
+    if (upload.status === 'fulfilled') {
+      entry.audioUrl = upload.value.url;
+      console.log('[VAD] Uploaded segment:', upload.value.url);
+    } else {
+      entry.audioUploadError = upload.reason?.message || String(upload.reason);
+      console.error('[VAD] Segment upload failed:', entry.audioUploadError);
+    }
+    await removeLocalFile(path);
+  })();
+  state.jobs.push(job);
+
   // Retain 150 ms before the next utterance for its configured speech padding.
   pruneAudio(state, Math.max(state.bufferStartSample, endSample - SAMPLE_RATE * PADDING_SECONDS));
   state.speechStart = null;
-  console.log('[VAD] Uploaded segment:', uploaded.url);
-  return uploaded.url;
+  console.log(`[VAD] Segment ${state.segmentNumber} queued for transcription`);
+  return entry;
 }
 
 function pruneAudio(state, beforeSample) {

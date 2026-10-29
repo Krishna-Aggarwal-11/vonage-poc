@@ -1,7 +1,7 @@
 import { WebSocketServer } from 'ws';
 import { finishVadStream, handleIncomingAudioChunk } from './vad.js';
 import { finishAudioRecording, handleIncomingAudioChunk as recordFullAudioChunk } from './audio-recorder.js';
-import { uploadAudioFile } from './cloudinary-storage.js';
+import { removeLocalFile, uploadAudioFile } from './cloudinary-storage.js';
 
 export function setupAudioConnectorWebSocket(server) {
   const wss = new WebSocketServer({ noServer: true });
@@ -23,6 +23,41 @@ export function setupAudioConnectorWebSocket(server) {
     const recordingId = `${Date.now()}-${Math.random()}`;
     let writeQueue = Promise.resolve();
     let recordingFailed = false;
+    let connectionEnded = false;
+    let finalizationPromise = null;
+
+    const finalizeConnection = (reason) => {
+      if (finalizationPromise) return finalizationPromise;
+      connectionEnded = true;
+      finalizationPromise = writeQueue.then(async () => {
+        console.log(`[AudioConnector] Finalizing recording after ${reason}`);
+        const [fullResult, vadResult] = await Promise.allSettled([
+          finishAudioRecording(recordingId),
+          finishVadStream(recordingId)
+        ]);
+
+        if (fullResult.status === 'fulfilled' && fullResult.value) {
+          try {
+            const uploaded = await uploadAudioFile(fullResult.value);
+            await removeLocalFile(fullResult.value);
+            console.log('[AudioConnector] Full recording uploaded:', uploaded.url);
+          } catch (err) {
+            console.error('[AudioConnector] Failed to upload full recording:', err);
+          }
+        } else if (fullResult.status === 'rejected') {
+          console.error('[AudioConnector] Failed to finalize full recording:', fullResult.reason);
+        }
+
+        if (vadResult.status === 'fulfilled' && vadResult.value?.transcriptUrl) {
+          console.log('[AudioConnector] Transcript JSON uploaded:', vadResult.value.transcriptUrl);
+        } else if (vadResult.status === 'rejected') {
+          console.error('[AudioConnector] Failed to finalize VAD transcripts:', vadResult.reason);
+        }
+      }).catch((err) => {
+        console.error('[AudioConnector] Failed to finalize recordings:', err);
+      });
+      return finalizationPromise;
+    };
 
     ws.on('message', (data, isBinary) => {
       if (!isBinary) {
@@ -37,6 +72,7 @@ export function setupAudioConnectorWebSocket(server) {
         }
       } else {
         // AudioConnector binary frames are signed 16-bit PCM at 16 kHz.
+        if (connectionEnded || recordingFailed) return;
         writeQueue = writeQueue.then(async () => {
           if (recordingFailed) return;
           await recordFullAudioChunk(data, sessionMetadata, recordingId);
@@ -51,35 +87,12 @@ export function setupAudioConnectorWebSocket(server) {
 
     ws.on('close', (code, reason) => {
       console.log(`[AudioConnector] Disconnected: ${code} - ${reason.toString()}`);
-      writeQueue.then(async () => {
-        const [fullResult, vadResult] = await Promise.allSettled([
-          finishAudioRecording(recordingId),
-          finishVadStream(recordingId)
-        ]);
-
-        if (fullResult.status === 'fulfilled' && fullResult.value) {
-          try {
-            const uploaded = await uploadAudioFile(fullResult.value);
-            console.log('[AudioConnector] Full recording uploaded:', uploaded.url);
-          } catch (err) {
-            console.error('[AudioConnector] Failed to upload full recording:', err);
-          }
-        } else if (fullResult.status === 'rejected') {
-          console.error('[AudioConnector] Failed to finalize full recording:', fullResult.reason);
-        }
-
-        if (vadResult.status === 'fulfilled' && vadResult.value.length) {
-          console.log('[AudioConnector] Final VAD segments uploaded:', vadResult.value);
-        } else if (vadResult.status === 'rejected') {
-          console.error('[AudioConnector] Failed to finalize VAD segments:', vadResult.reason);
-        }
-      }).catch((err) => {
-        console.error('[AudioConnector] Failed to finalize recordings:', err);
-      });
+      finalizeConnection(`WebSocket close ${code}`);
     });
 
     ws.on('error', (err) => {
       console.error('[AudioConnector] Socket error:', err);
+      finalizeConnection('WebSocket error');
     });
   });
 }

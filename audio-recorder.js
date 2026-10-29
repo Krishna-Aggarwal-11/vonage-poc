@@ -1,14 +1,14 @@
 import { createWriteStream } from 'node:fs';
 import { mkdir, open } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const SAMPLE_RATE = 16_000;
 const CHANNELS = 1;
 const BITS_PER_SAMPLE = 16;
-// Use the project's existing `recording` directory. Override with
-// RECORDINGS_DIR when deploying to a writable volume.
-const RECORDINGS_DIR = process.env.RECORDINGS_DIR || fileURLToPath(new URL('./recording/', import.meta.url));
+// Vercel's deployed app directory is read-only. Use its writable temp area;
+// set RECORDINGS_DIR to use another writable mounted volume.
+const RECORDINGS_DIR = process.env.RECORDINGS_DIR || join(tmpdir(), 'recording');
 const recordings = new Map();
 
 // Save one complete PCM segment as a standard mono 16-bit WAV file.

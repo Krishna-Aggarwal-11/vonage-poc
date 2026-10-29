@@ -21,6 +21,7 @@ export function setupAudioConnectorWebSocket(server) {
     let sessionMetadata = null;
     const recordingId = `${Date.now()}-${Math.random()}`;
     let writeQueue = Promise.resolve();
+    let recordingFailed = false;
 
     ws.on('message', (data, isBinary) => {
       if (!isBinary) {
@@ -36,9 +37,11 @@ export function setupAudioConnectorWebSocket(server) {
       } else {
         // AudioConnector binary frames are signed 16-bit PCM at 16 kHz.
         writeQueue = writeQueue.then(async () => {
+          if (recordingFailed) return;
           await recordFullAudioChunk(data, sessionMetadata, recordingId);
           await handleIncomingAudioChunk(data, sessionMetadata, recordingId);
         }).catch((err) => {
+          recordingFailed = true;
           console.error('[AudioConnector] Failed to process audio chunk:', err);
           ws.close(1011, 'VAD processing failed');
         });

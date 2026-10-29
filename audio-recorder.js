@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url';
 const SAMPLE_RATE = 16_000;
 const CHANNELS = 1;
 const BITS_PER_SAMPLE = 16;
-const RECORDINGS_DIR = fileURLToPath(new URL('./recordings/', import.meta.url));
+// Use the project's existing `recording` directory. Override with
+// RECORDINGS_DIR when deploying to a writable volume.
+const RECORDINGS_DIR = process.env.RECORDINGS_DIR || fileURLToPath(new URL('./recording/', import.meta.url));
 const recordings = new Map();
 
 // Save one complete PCM segment as a standard mono 16-bit WAV file.

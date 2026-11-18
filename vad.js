@@ -1,5 +1,5 @@
 import { createVad } from '@fluidinference/fluidvad';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { writePcmWaveFile } from './audio-recorder.js';
@@ -11,17 +11,20 @@ const PADDING_SECONDS = 0.15;
 const SILENCE_SECONDS = 1;
 const streams = new Map();
 
-async function createStream(sessionId) {
+async function createStream(metadata) {
   const vad = await createVad({
     threshold: 0.5,
     minSilenceDuration: SILENCE_SECONDS,
     speechPadding: PADDING_SECONDS,
     maxSpeechDuration: Infinity
   });
-  const safeId = String(sessionId || 'recording').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const safeId = `${metadata?.userId || 'user'}-${metadata?.sessionId || 'recording'}`
+    .replace(/[^a-zA-Z0-9_-]/g, '_');
+  const userId = String(metadata?.userId || 'unknown-user').replace(/[^a-zA-Z0-9_-]/g, '_');
   return {
     vad,
     safeId,
+    userId,
     chunks: [],
     totalSamples: 0,
     bufferStartSample: 0,
@@ -36,7 +39,7 @@ async function createStream(sessionId) {
 export async function handleIncomingAudioChunk(pcmChunk, metadata, streamId) {
   let state = streams.get(streamId);
   if (!state) {
-    const pending = createStream(metadata?.sessionId);
+    const pending = createStream(metadata);
     streams.set(streamId, pending);
     state = await pending;
     streams.set(streamId, state);
@@ -83,7 +86,9 @@ export async function finishVadStream(streamId) {
   // Transcriptions run concurrently while audio keeps arriving. On socket
   // close, retain the job and finish only after every chunk settles.
   await Promise.allSettled(state.jobs);
-  const jsonPath = join(tmpdir(), `${state.safeId}-${Date.now()}-transcript.json`);
+  const userDir = join(tmpdir(), 'transcripts', state.userId);
+  await mkdir(userDir, { recursive: true });
+  const jsonPath = join(userDir, `${state.safeId}-${Date.now()}-transcript.json`);
   await writeFile(jsonPath, JSON.stringify(state.transcriptEntries, null, 2));
   try {
     const uploaded = await uploadJsonFile(jsonPath);
@@ -107,7 +112,7 @@ async function saveSegment(state, startSample, endSample) {
 
   state.segmentNumber += 1;
   const fileId = `${state.safeId}-segment-${String(state.segmentNumber).padStart(3, '0')}`;
-  const path = await writePcmWaveFile(audio, fileId);
+  const path = await writePcmWaveFile(audio, fileId, state.userId);
   const entry = {
     startTime: Number((startSample / SAMPLE_RATE).toFixed(3)),
     endTime: Number((endSample / SAMPLE_RATE).toFixed(3)),

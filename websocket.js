@@ -20,7 +20,10 @@ export function setupAudioConnectorWebSocket(server) {
   wss.on('connection', (ws, req) => {
     console.log('[AudioConnector] Client connected from:', req.socket.remoteAddress);
     let sessionMetadata = null;
-    const recordingId = `${Date.now()}-${Math.random()}`;
+    // Keep a distinct buffer for every socket, while namespacing it by the
+    // AudioConnector x-user-id so different callers never share audio state.
+    const connectionId = `${Date.now()}-${Math.random()}`;
+    let recordingId = connectionId;
     let writeQueue = Promise.resolve();
     let recordingFailed = false;
     let connectionEnded = false;
@@ -64,8 +67,15 @@ export function setupAudioConnectorWebSocket(server) {
         try {
           const message = JSON.parse(data.toString());
           console.log('[AudioConnector] Control/Metadata event:', message);
+          const userId = message['x-user-id'] ?? message['×-user-id'];
+          if (userId) {
+            sessionMetadata = { ...sessionMetadata, ...message, userId };
+            // The user id scopes this connection's buffers; connectionId keeps
+            // simultaneous sockets for the same user isolated as well.
+            recordingId = `${String(userId).replace(/[^a-zA-Z0-9_-]/g, '_')}:${connectionId}`;
+          }
           if (message.event === 'start' || message.sessionId) {
-            sessionMetadata = message;
+            sessionMetadata = { ...sessionMetadata, ...message };
           }
         } catch (err) {
           console.error('[AudioConnector] Failed to parse text message:', err);

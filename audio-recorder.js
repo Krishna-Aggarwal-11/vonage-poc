@@ -12,9 +12,10 @@ const RECORDINGS_DIR = process.env.RECORDINGS_DIR || join(tmpdir(), 'recording')
 const recordings = new Map();
 
 // Save one complete PCM segment as a standard mono 16-bit WAV file.
-export async function writePcmWaveFile(pcm, fileId) {
-  await mkdir(RECORDINGS_DIR, { recursive: true });
-  const path = join(RECORDINGS_DIR, `${fileId}-${Date.now()}.wav`);
+export async function writePcmWaveFile(pcm, fileId, userId) {
+  const userDir = join(RECORDINGS_DIR, safeFolderName(userId));
+  await mkdir(userDir, { recursive: true });
+  const path = join(userDir, `${fileId}-${Date.now()}.wav`);
   const output = createWriteStream(path);
   await new Promise((resolve, reject) => {
     output.once('open', resolve);
@@ -33,7 +34,7 @@ export async function writePcmWaveFile(pcm, fileId) {
 export function handleIncomingAudioChunk(pcmChunk, metadata, recordingId) {
   let recording = recordings.get(recordingId);
   if (!recording) {
-    recording = createPcmWaveRecording(metadata?.sessionId);
+    recording = createPcmWaveRecording(metadata?.sessionId, metadata?.userId);
     recordings.set(recordingId, recording);
   }
 
@@ -49,9 +50,10 @@ export async function finishAudioRecording(recordingId) {
   return recording.path;
 }
 
-function createPcmWaveRecording(sessionId) {
+function createPcmWaveRecording(sessionId, userId) {
   const safeId = String(sessionId || 'recording').replace(/[^a-zA-Z0-9_-]/g, '_');
-  const path = join(RECORDINGS_DIR, `${safeId}-full-${Date.now()}.wav`);
+  const userDir = join(RECORDINGS_DIR, safeFolderName(userId));
+  const path = join(userDir, `${safeId}-full-${Date.now()}.wav`);
   let dataBytes = 0;
   let closed = false;
   let output;
@@ -61,7 +63,7 @@ function createPcmWaveRecording(sessionId) {
     resolveReady = resolve;
     rejectReady = reject;
   });
-  const initialized = mkdir(RECORDINGS_DIR, { recursive: true }).then(() => {
+  const initialized = mkdir(userDir, { recursive: true }).then(() => {
     output = createWriteStream(path);
     output.once('open', resolveReady);
     output.once('error', rejectReady);
@@ -103,6 +105,10 @@ function createPcmWaveRecording(sessionId) {
       }
     }
   };
+}
+
+function safeFolderName(userId) {
+  return String(userId || 'unknown-user').replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
 function makeWaveHeader(dataBytes) {
